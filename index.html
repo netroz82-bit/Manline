@@ -547,8 +547,12 @@ var LS={
 };
 var ico=function(btn,id){var u=btn.querySelector('use');if(u)u.setAttribute('href','#'+id)};
 var nz=function(s){return String(s).toLowerCase().replace(/ي/g,'ی').replace(/ك/g,'ک').replace(/[\u064B-\u065F\u200c]/g,'')};
+/* مرتب‌سازی بر اساس نام: فقط حروف و عددها در نظر گرفته می‌شوند و نشانه‌ها نادیده‌اند */
+var SKM=new Map();
+var sortKey=function(n){var k=SKM.get(n);if(k===undefined){k=nz(n).normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^\p{L}\p{N}]+/gu,'');if(SKM.size>60000) SKM.clear();SKM.set(n,k)}return k};
+var nameCmp=function(x,y){return sortKey(x).localeCompare(sortKey(y),'fa',{numeric:true,sensitivity:'base'})||String(x).localeCompare(String(y),'fa')};
 
-var LIMIT=30000, MAXT=30000, ATT=10000, MINW=5000, RETRY_WAIT=3000, HTTPS=location.protocol==='https:';
+var LIMIT=30000, MAXT=60000, SOFT=30000, ATT=10000, MINW=5000, RETRY_WAIT=3000, HTTPS=location.protocol==='https:';
 var HLS_URLS=['https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js','https://fastly.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js','https://gcore.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js','https://testingcf.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js','https://unpkg.com/hls.js@1.7.3/dist/hls.min.js','https://registry.npmmirror.com/hls.js/1.7.3/files/dist/hls.min.js','https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.6.15/hls.min.js','https://cdn.bootcdn.net/ajax/libs/hls.js/1.5.13/hls.min.js'];
 
 /* ================= تنظیمات و ذخیره‌سازی ================= */
@@ -667,7 +671,7 @@ var CC_MORE='ad al ao ar at aw ba bb bd be bg bn bo bs by ch cl cm co cr cu cy c
     SRC_CT.push(C(cc,a||b,b||a,'ctry'));
   });
 })();
-SRC_CT.sort(function(a,b){return a.t.localeCompare(b.t,'fa')});
+SRC_CT.sort(function(a,b){return nameCmp(a.t,b.t)});
 var SRC=[
   {id:'g-ctry',t:'همه شبکه‌ها به تفکیک کشور',te:'All channels by country',p:'index.country.m3u',g:'all',big:true,grp:true},
   {id:'all',t:'همه شبکه‌های جهان',te:'All channels worldwide',p:'index.m3u',g:'all',big:true}
@@ -682,7 +686,7 @@ SRC_REC.concat(SRC_CT,SRC_LANG).forEach(function(s){if(s.te)GN[s.te.toLowerCase(
 var grpName=function(g){if(!g||g==='undefined') return '';var s=GN[String(g).toLowerCase()];return s?srcName(s):g};
 /* فهرست‌های «به تفکیک زبان/کشور» دسته‌بندی ندارند؛ دستهٔ هر شبکه از فهرست کامل ذخیره‌شده گرفته می‌شود */
 async function buildFor(s,txt){
-  var arr=build(parseM3U(txt));
+  var arr=build(parseM3U(txt),false,false,!!(s&&s.id==='all'));
   if(!s.grp) return arr;
   var ref=GA;
   if(!ref.length){
@@ -700,7 +704,7 @@ async function buildFor(s,txt){
     });
   }
   arr.forEach(function(c){c.gn=grpName(c.grp)});
-  arr.sort(function(a,b){return (a.gn===''?1:0)-(b.gn===''?1:0)||a.gn.localeCompare(b.gn,LANG==='en'?'en':'fa')||a.n.localeCompare(b.n,'fa')});
+  arr.sort(function(a,b){return (a.gn===''?1:0)-(b.gn===''?1:0)||a.gn.localeCompare(b.gn,LANG==='en'?'en':'fa')||nameCmp(a.n,b.n)});
   return arr;
 }
 var ORG_BASES=[
@@ -859,7 +863,7 @@ function cleanName(t){
 var nk=function(n){return 'n:'+String(n).toLowerCase().replace(/[\s\-_.()'’!&]+/g,'')};
 /* کلید تشخیص شبکهٔ تکراری: نام بدون برچسب‌های کیفیت (HD / FHD / 4K …) */
 var dk=function(n){
-  var x=nz(n).replace(/(^|[^a-z0-9])(hd|fhd|uhd|sd|4k|hq|hevc)(?![a-z0-9])/g,' ').replace(/[\s\-_.()'’!&+]+/g,'');
+  var x=nz(n).replace(/(^|[^a-z0-9])(hd|fhd|uhd|sd|4k|hq|hevc)(?![a-z0-9])/g,' ').replace(/[^\p{L}\p{N}]+/gu,'');
   return x.length>1?'n:'+x:nk(n);
 };
 /* شبکه‌های بزرگسال: بدون محدودیت اضافه می‌شوند و فقط با علامت ۱۸+ مشخص می‌شوند */
@@ -927,7 +931,66 @@ function foldDupes(arr){
   });
   return out;
 }
-function build(entries,keepDel,raw){
+/* ================= حافظهٔ ماندگار شبکه‌ها =================
+   هر شبکه‌ای که یک بار پیدا شده در حافظه می‌ماند و با به‌روزرسانی یا جستجوی تازه پاک نمی‌شود؛
+   فقط وقتی آزمایش پخش آن را ناسالم تشخیص دهد، با حذف فایل یا با «پاک کردن تاریخچه» برداشته می‌شود.
+   شبکهٔ تکراری به‌عنوان سرور دیگرِ همان شبکه ذخیره می‌شود. */
+var CHDB=new Map(),chdbDirty=false,chdbT=0,chdbReady=false;
+function chdbSlim(c){return {k:c.k,n:c.n,logo:c.logo||'',cats:(c.cats||[]).slice(0,4),cc:c.cc||'',adult:c.adult?1:0,grp:c.grp||'',src:(c.src||[]).slice(0,16).map(function(x){return {u:x.u,q:x.q||0,geo:!!x.geo}})}}
+function chdbSaveNow(){
+  clearTimeout(chdbT);chdbT=0;
+  if(!chdbReady){chdbT=setTimeout(chdbSaveNow,3000);return}
+  if(!chdbDirty) return;
+  chdbDirty=false;
+  var a=[];CHDB.forEach(function(e){a.push(e)});
+  try{bigSet('ml_chdb',{x:JSON.stringify(a)}).catch(function(){})}catch(e){}
+}
+function chdbSaveSoon(){chdbDirty=true;if(!chdbT) chdbT=setTimeout(chdbSaveNow,5000)}
+function chdbDel(k){if(CHDB.delete(k)) chdbSaveSoon()}
+function chdbClear(){CHDB=new Map();chdbDirty=false;clearTimeout(chdbT);chdbT=0;LS.d('ml_chdb')}
+function chdbMerge(arr){
+  var ch=false,now=Date.now();
+  arr.forEach(function(c){
+    if(c.user||!c.k||!c.src||!c.src.length) return;
+    if(VBAD[c.k]&&now-VBAD[c.k]<VBAD_TTL) return;
+    var e=CHDB.get(c.k);
+    if(!e){CHDB.set(c.k,chdbSlim(c));ch=true;return}
+    c.src.forEach(function(x){if(e.src.length<16&&!e.src.some(function(y){return y.u===x.u})){e.src.push({u:x.u,q:x.q||0,geo:!!x.geo});ch=true}});
+    if(!e.logo&&c.logo){e.logo=c.logo;ch=true}
+  });
+  if(ch) chdbSaveSoon();
+}
+function chdbRestore(arr,keepDel){
+  var by=new Map(),out=arr.slice();
+  arr.forEach(function(c){by.set(c.k,c);by.set(dk(c.n),c)});
+  CHDB.forEach(function(e){
+    var hit=by.get(e.k)||by.get(dk(e.n));
+    if(hit){
+      e.src.forEach(function(x){if(hit.src.length<24&&!hit.src.some(function(y){return y.u===x.u})) hit.src.push({u:x.u,q:x.q||0,geo:!!x.geo})});
+      return;
+    }
+    var c={k:e.k,n:e.n,logo:e.logo||'',cats:(e.cats||[]).slice(),cc:e.cc||'',grp:e.grp||'',src:e.src.map(function(x){return {u:x.u,q:x.q||0,geo:!!x.geo}})};
+    if(e.adult) c.adult=true;
+    if(isAd(c)&&CFG.hideAdult) return;
+    if(isBlocked(c)||(!keepDel&&isDeleted(c))) return;
+    if(c.cats.indexOf('religious')>-1||RELIG.test(c.n)) return;
+    c.gn=grpName(c.grp);
+    out.push(c);by.set(c.k,c);by.set(dk(c.n),c);
+  });
+  return out;
+}
+function chdbLoad(){
+  bigGet('ml_chdb').then(function(o){
+    var add=0,now=Date.now();
+    try{if(o&&o.x) JSON.parse(o.x).forEach(function(e){
+      if(e&&e.k&&e.n&&e.src&&e.src.length&&!CHDB.has(e.k)&&!(VBAD[e.k]&&now-VBAD[e.k]<VBAD_TTL)){CHDB.set(e.k,e);add++}
+    })}catch(x){}
+    chdbReady=true;
+    if(add) reloadLists();
+    if(chdbDirty) chdbSaveSoon();
+  }).catch(function(){chdbReady=true});
+}
+function build(entries,keepDel,raw,glob){
   var map=new Map(),byUrl=new Map(),i,e;
   for(i=0;i<entries.length;i++){
     e=entries[i];
@@ -961,9 +1024,11 @@ function build(entries,keepDel,raw){
     arr.push(c);
   });
   arr=foldDupes(arr).filter(function(c){return !isBlocked(c)&&(keepDel||!isDeleted(c))});
+  if(!keepDel) chdbMerge(arr);
+  if(glob) arr=chdbRestore(arr,keepDel);
   RAWN=arr.length;
   if(CFG.verify&&!raw) arr=arr.filter(function(c){return !!VER[c.k]});
-  arr.sort(function(a,b){return a.n.localeCompare(b.n,'fa')});
+  arr.sort(function(a,b){return nameCmp(a.n,b.n)});
   return arr;
 }
 
@@ -1035,7 +1100,7 @@ async function trackNew(arr){
   }catch(e){return []}
 }
 /* شبکه‌هایی که خود کاربر اضافه کرده با فهرست اصلی ادغام می‌شوند (بدون تکرار) */
-var cmpCh=function(a,b){var ga=a.gn||'',gb=b.gn||'';return (ga===''?1:0)-(gb===''?1:0)||ga.localeCompare(gb,'fa')||a.n.localeCompare(b.n,'fa')};
+var cmpCh=function(a,b){var ga=a.gn||'',gb=b.gn||'';return (ga===''?1:0)-(gb===''?1:0)||ga.localeCompare(gb,'fa')||nameCmp(a.n,b.n)};
 function userMerge(arr){
   if(typeof UCH==='undefined'||!UCH||!UCH.length||curSrc().g!=='all') return arr;
   var urls=new Set(),names=new Set(),out=arr.slice(),added=0;
@@ -1438,14 +1503,14 @@ async function loadCollection(s){
     var re=new RegExp(s.q,'i'),ref=GA;
     if(!ref.length){
       var ac=await bigGet('ml_c_all');
-      if(ac&&ac.x) ref=build(parseM3U(ac.x));
+      if(ac&&ac.x) ref=build(parseM3U(ac.x),false,false,true);
     }
     if(!ref.length){
       var txt=await getFirst(urlsForPath('index.m3u'));
       var ex=await pullExtra({id:'all',cc:'',p:'index.m3u'});
       if(ex) txt+=ex;
       await bigSet('ml_c_all',{t:Date.now(),x:txt});
-      ref=build(parseM3U(txt));
+      ref=build(parseM3U(txt),false,false,true);
     }
     if(!GA.length){GA=ref;GA.forEach(poolAdd)}
     arr=ref.filter(function(c){return re.test(c.n)});
@@ -1466,7 +1531,7 @@ async function load(force){
     if(c.x.indexOf('# manline-extra')<0){
       pullExtra(s).then(function(ex){
         if(!ex||s.id!==curSrc().id) return;
-        try{var mix=c.x+ex;setChans(build(parseM3U(mix)));cacheSave(ck,mix);render()}catch(e){}
+        try{var mix=c.x+ex;setChans(build(parseM3U(mix),false,false,s.id==='all'));cacheSave(ck,mix);render()}catch(e){}
       });
     }
     return;
@@ -1567,7 +1632,7 @@ async function updateAll(){
     var txt=await mainP;
     var extra=await extraP;
     if(extra) txt+=extra;
-    var arr=build(parseM3U(txt));
+    var arr=build(parseM3U(txt),false,false,true);
     if(!arr.length&&!(CFG.verify&&RAWN>0)) throw new Error('empty');
     await bigSet('ml_c_all',{t:Date.now(),x:txt});
     CFG.src='all';saveCfg();S.cat='all';S.q='';
@@ -1930,7 +1995,15 @@ function fail(a,tok,why){
 }
 function next(tok){P.ai++;step(tok)}
 /* حداکثر انتظار برای پخش یک شبکه ۳۰ ثانیه است؛ پس از آن پخش‌کننده بسته می‌شود */
-function timeUp(){return Date.now()>=P.t0+MAXT}
+/* تا ۳۰ ثانیه عادی؛ پس از آن فقط تا وقتی که سروری آزمایش‌نشده مانده صبر می‌شود و حداکثر یک دقیقه */
+function timeUp(){
+  var el=Date.now()-P.t0;
+  if(el>=MAXT) return true;
+  if(el<SOFT) return false;
+  if(P.pass>=1) return true;
+  if(P.ai<P.att.length) return false;
+  return !!P.moreDone;
+}
 /* شمارش معکوس تلاش دوباره: ۵ تا ۰، سپس ادامهٔ جست‌وجو */
 function countdown(tok,cb){
   clearInterval(P.cd);
@@ -1949,6 +2022,7 @@ function step(tok){
   if(P.ai>=P.att.length){
     if(!P.moreP) P.moreP=addExtra(tok);
     P.moreP.then(function(){
+      P.moreDone=true;
       if(tok!==P.tok) return;
       if(P.ai<P.att.length) return step(tok);
       P.pass++;
@@ -1976,13 +2050,14 @@ function startTick(tok){
   P.tick=setInterval(function(){
     if(tok!==P.tok||P.found){clearInterval(P.tick);return}
     if(Date.now()-P.t0>=10000&&!P.moreP) P.moreP=addExtra(tok);
+    if(!P.softMsg&&Date.now()-P.t0>=SOFT){P.softMsg=true;toast(t('wait_all'),4000)}
     if(timeUp()) giveUp();
   },500);
 }
 async function startSearch(first,mode){
   var tok=++P.tok;
   teardown();clearTimeout(P.ato);clearTimeout(P.stl);
-  P.found=false;P.tlsF={};P.hlsNet={};P.fail={};P.hlsTried={};P.nativeOk={};P.pr={};P.moreP=null;P.pass=0;P.recN=0;P.recM=0;P.cur=null;P.qsel=-1;
+  P.found=false;P.tlsF={};P.hlsNet={};P.fail={};P.hlsTried={};P.nativeOk={};P.pr={};P.moreP=null;P.moreDone=false;P.softMsg=false;P.pass=0;P.recN=0;P.recM=0;P.cur=null;P.qsel=-1;
   P.t0=Date.now();P.deadline=P.t0+LIMIT;P.ai=0;clearInterval(P.cd);if(P.prog){P.prog='';progUI()}
   ST.classList.add('srch');spin(false);stat(t('connecting'));showOvl();startTick(tok);
   updQ();
@@ -2052,13 +2127,13 @@ function loadGlobal(){
   if(GP) return GP;
   GP=(async function(){
     var c=await bigGet('ml_c_all');
-    if(c&&c.x){try{GA=build(parseM3U(c.x));GA.forEach(poolAdd);if(c.x.indexOf('# manline-extra')<0){pullExtra({id:'all',cc:'',p:'index.m3u'}).then(function(ex){if(!ex)return;try{var mix=c.x+ex;GA=build(parseM3U(mix));GA.forEach(poolAdd);bigSet('ml_c_all',{t:Date.now(),x:mix})}catch(e){}})}return true}catch(e){}}
+    if(c&&c.x){try{GA=build(parseM3U(c.x),false,false,true);GA.forEach(poolAdd);if(c.x.indexOf('# manline-extra')<0){pullExtra({id:'all',cc:'',p:'index.m3u'}).then(function(ex){if(!ex)return;try{var mix=c.x+ex;GA=build(parseM3U(mix),false,false,true);GA.forEach(poolAdd);bigSet('ml_c_all',{t:Date.now(),x:mix})}catch(e){}})}return true}catch(e){}}
     var mainP=getFirst(urlsForPath('index.m3u'));
     var extraP=pullExtra({id:'all',cc:'',p:'index.m3u'});
     var tx=await mainP;
     var extra=await extraP;
     if(extra) tx+=extra;
-    GA=build(parseM3U(tx));GA.forEach(poolAdd);
+    GA=build(parseM3U(tx),false,false,true);GA.forEach(poolAdd);
     bigSet('ml_c_all',{t:Date.now(),x:tx});
     return true;
   })().catch(function(){GP=null;return false});
@@ -2445,7 +2520,7 @@ function rLang(lang,cc){
   }
   return 5;
 }
-var rCmp=function(a,b){return a.rk-b.rk||b.pop-a.pop||a.n.localeCompare(b.n,'fa')};
+var rCmp=function(a,b){return a.rk-b.rk||b.pop-a.pop||nameCmp(a.n,b.n)};
 var R_MUSIC=/music|موسیق|pop|rock|jazz|classic|folk|hip.?hop|rap\b|dance|electro|edm|house|techno|trance|lo-?fi|blues|country|metal|reggae|soul|r&b|latin|oldies|hits|top ?40|ambient|chill|lounge|instrumental|disco|funk|indie|punk|gospel|songs?|ترانه|آهنگ/i;
 var R_NON=/news|talk|sport|politic|religio|islam|quran|koran|church|christian|sermon|podcast|weather|traffic|audiobook|education|اخبار|خبر|قرآن|مذهب|ورزش/i;
 var rIsMusic=function(s){var x=String(s[1]||'')+' '+String(s[4]||'');return R_MUSIC.test(x)&&!R_NON.test(x)&&!RELIG.test(x.toLowerCase())};
@@ -2492,6 +2567,13 @@ function radioApply(){
 }
 function radioRebuild(){RRAW=buildRadio(RITEMS);radioApply()}
 function radioPaint(){if(HOME.classList.contains('on')&&(S.tab==='radio'||S.tab==='fav')) render()}
+var RTS=0,rfT=0;
+/* ایستگاهی که آزمایش پخش آن را ناسالم تشخیص داد از حافظه برداشته می‌شود */
+function radioForget(c){
+  var us=new Set((c.src||[]).map(function(x){return x.u}));
+  RITEMS=RITEMS.filter(function(x){return !us.has(String(x[2]||'').trim())});
+  clearTimeout(rfT);rfT=setTimeout(function(){bigSet('ml_radio',{t:RTS||0,items:RITEMS})},4000);
+}
 var RB=['https://de1.api.radio-browser.info','https://de2.api.radio-browser.info','https://nl1.api.radio-browser.info','https://fi1.api.radio-browser.info','https://at1.api.radio-browser.info','https://all.api.radio-browser.info'],RBI=0;
 async function rbGet(path){
   var last=null,n,b,j;
@@ -2503,11 +2585,11 @@ async function rbGet(path){
 }
 function rQueries(){
   var base='hidebroken=true&order=clickcount&reverse=true'+(HTTPS?'&is_https=true':''),qs=[];
-  [['persian',900],['farsi',300],['kurdish',500],['turkish',700],['arabic',700],['english',1100]].forEach(function(x){
+  [['persian',1000],['farsi',400],['dari',200],['pashto',200],['kurdish',500],['turkish',800],['arabic',800],['azerbaijani',250],['urdu',250],['hindi',300],['russian',300],['german',300],['french',300],['spanish',300],['italian',250],['portuguese',250],['english',1200]].forEach(function(x){
     qs.push('/json/stations/search?language='+x[0]+'&languageExact=true&'+base+'&limit='+x[1]);
   });
-  qs.push('/json/stations/search?countrycode=IR&'+base+'&limit=300');
-  ['music','pop','rock','jazz','classical','dance','hip hop','electronic','folk','lounge'].forEach(function(tg){
+  ['IR','AF','TJ','TR','IQ','AE','SA','EG','LB','AZ','PK','IN','DE','FR','ES','IT','GB','US','RU','BR','NL','SE','GR','CA'].forEach(function(cc){qs.push('/json/stations/search?countrycode='+cc+'&'+base+'&limit='+(cc==='IR'?400:200))});
+  ['music','pop','rock','jazz','classical','dance','hip hop','electronic','folk','lounge','house','techno','ambient','oldies','country','reggae','latin','blues','metal','rap'].forEach(function(tg){
     qs.push('/json/stations/search?tag='+encodeURIComponent(tg)+'&'+base+'&limit=500');
   });
   return qs;
@@ -2528,7 +2610,7 @@ async function radioFetch(){
       }catch(e){}
     }
   }
-  await Promise.all([1,2,3,4].map(w));
+  await Promise.all([1,2,3,4,5,6].map(w));
   if(!okN) throw new Error('radio');
   return out;
 }
@@ -2537,14 +2619,17 @@ async function radioLoad(force){
   if(!CFG.showRadio||RS.loading) return;
   RS.err=false;
   var c=await bigGet('ml_radio'),has=!!(c&&c.items&&c.items.length);
+  RTS=(c&&c.t)||0;
   if(has&&!RITEMS.length){RITEMS=c.items;RRAW=buildRadio(RITEMS);radioApply();radioPaint()}
   if(has&&!force&&Date.now()-c.t<12*3600*1000){if(CFG.verify) verifyKick();return}
   RS.loading=true;if(!RADIO.length) radioPaint();
   try{
     var items=await radioFetch();
     if(!items.length) throw new Error('empty');
-    RITEMS=items;
-    await bigSet('ml_radio',{t:Date.now(),items:items});
+    /* ایستگاه‌های قبلی پاک نمی‌شوند؛ تازه‌ها به آن‌ها افزوده می‌شوند */
+    var seenR=new Set(items.map(function(x){return x[0]})),oldR=(RITEMS||[]).filter(function(x){return x&&!seenR.has(x[0])});
+    RITEMS=items.concat(oldR).slice(0,30000);RTS=Date.now();
+    await bigSet('ml_radio',{t:RTS,items:RITEMS});
     RRAW=buildRadio(RITEMS);
   }catch(e){RS.err=!RRAW.length}
   RS.loading=false;radioApply();radioPaint();
@@ -2639,7 +2724,7 @@ function vTest(u,mode,ms){
 var HF={},HFS={};
 var vHost=function(u){var m=/^https?:\/\/([^\/?#:]+)/i.exec(u);return m?m[1].toLowerCase():''};
 async function vCheck(c,my){
-  var rad=!!c.radio,ms=rad?6000:8000,n=Math.min(c.src.length,3),i,j,s,u,md,h,hv,ok,t0;
+  var rad=!!c.radio,ms=rad?9000:8000,n=Math.min(c.src.length,rad?5:3),i,j,s,u,md,h,hv,ok,t0;
   for(i=0;i<n;i++){
     s=c.src[i];u=HTTPS?s.u.replace(/^http:/i,'https:'):s.u;h=vHost(u);
     if(CFG.sslSafe&&!VS.noskip&&HF[h]>=6&&!HFS[h]) return 'skip';
@@ -2695,7 +2780,7 @@ function vFlush(){
       var hv=new Set(S.chans.map(function(c){return c.k})),nw=add.filter(function(c){return !hv.has(c.k)});
       if(nw.length){
         var base=S.chans.filter(function(c){return !c.user}).concat(nw);
-        base.sort(function(a,b){return a.n.localeCompare(b.n,'fa')});
+        base.sort(function(a,b){return nameCmp(a.n,b.n)});
         setChans(base);
       }
     }
@@ -2713,10 +2798,10 @@ async function vWorker(q,my,st){
     if(r==='skip'){if(st.sk) st.sk.push(c);vStat();continue}
     if(r){
       vOk(c,r);st.ok++;
-      if(st.pend.length){st.pend.forEach(function(k){VBAD[k]=Date.now()});st.pend=[]}
+      if(st.pend.length){st.pend.forEach(function(k){VBAD[k]=Date.now();chdbDel(k)});st.pend=[]}
     }else if(r===false){
       /* اگر هنوز هیچ شبکه‌ای سالم نبوده، احتمال قطعی اینترنت هست؛ شکست‌ها ثبت نمی‌شوند */
-      if(st.ok>0) VBAD[c.k]=Date.now();else st.pend.push(c.k);
+      if(st.ok>0){VBAD[c.k]=Date.now();chdbDel(c.k);if(c.radio) radioForget(c)}else st.pend.push(c.k);
     }
     vStat();
   }
@@ -2726,7 +2811,7 @@ async function vRun(){
   if(!CFG.verify) return;
   var my=++VS.tok,tv=[],rd=[];HF={};HFS={};
   if(!HLS_DONE) await Promise.race([loadHls(),sleep(8000)]);
-  try{var ac=await bigGet('ml_c_all');if(ac&&ac.x) tv=build(parseM3U(ac.x),false,true)}catch(e){}
+  try{var ac=await bigGet('ml_c_all');if(ac&&ac.x) tv=build(parseM3U(ac.x),false,true,true)}catch(e){}
   if(my!==VS.tok||!CFG.verify) return;
   if(CFG.showRadio) rd=RRAW.slice();
   var now=Date.now(),need=function(c){return !VER[c.k]&&!(CFG.sslSafe&&VBAD[c.k]&&now-VBAD[c.k]<VBAD_TTL)};
@@ -2773,7 +2858,7 @@ async function verifyChanged(){
 /* ================= پاک کردن تاریخچه و همهٔ شبکه‌ها ================= */
 var RCLR=false;
 async function clearEverything(){
-  REC=[];LS.s('ml_rec',REC);vClearAll();
+  REC=[];LS.s('ml_rec',REC);vClearAll();chdbClear();
   S.chans=S.chans.filter(function(c){return c.user});S.map=new Map(S.chans.map(function(c){return [c.k,c]}));
   GA=[];POOL=new Map();UCH.forEach(poolAdd);
   RRAW=[];RADIO=[];RITEMS=[];RCLR=true;
@@ -2970,6 +3055,9 @@ Object.assign(T,{
 });
 Object.assign(T,{
   muted_note:['صدا بسته است؛ برای شنیدن صدا یک بار روی تصویر بزنید','Muted; tap the picture once to unmute']
+});
+Object.assign(T,{
+  wait_all:['شبکه تا ۳۰ ثانیه پخش نشد؛ همهٔ سرورهای آن بررسی می‌شود (حداکثر یک دقیقه)…','No picture after 30 s; checking all servers of this channel (up to one minute)…']
 });
 /* ================= زیرنویس خودکار (ترجمهٔ گفتار به فارسی) ================= */
 var AI_MODELS=['gemini-3.1-flash-lite','gemini-3.5-flash-lite','gemini-3.8-flash','gemini-2.5-flash-lite'],AS_SEC=8;
@@ -3561,13 +3649,13 @@ async function usAdd(u,label){
     if(txt.indexOf('#EXTINF')<0) throw new Error('no list');
     var ac=await bigGet('ml_c_all'),rep=null,item={u:u,n:label||u.replace(/^https?:\/\//,'')};
     if(ac&&ac.x){
-      var before=GA.length?GA:build(parseM3U(ac.x));
+      var before=GA.length?GA:build(parseM3U(ac.x),false,false,true);
       var own=build(parseM3U(txt),true);
       var okk=new Set();own.forEach(function(c){okk.add(c.k);okk.add(dk(c.n))});
       var rev=[];
       if(rev.length){DELL=DELL.filter(function(d){return rev.indexOf(d)<0});LS.s('ml_deleted',DELL);goneSets()}
       var mix=ac.x+'\n# manline-extra\n# manline-src:'+u+'\n'+txt+'\n# manline-end\n';
-      var after=build(parseM3U(mix));
+      var after=build(parseM3U(mix),false,false,true);
       var bk=new Set(before.map(function(c){return c.k}));
       var freshL=after.filter(function(c){return !bk.has(c.k)}),fresh=freshL.length;
       rep={fresh:fresh,dup:Math.max(0,own.length-fresh)};
@@ -3662,7 +3750,7 @@ function applyNav(){
 /* بازسازی فهرست از حافظه (پس از رفع مسدودی یا بازگردانی) */
 async function reloadLists(){
   radioRebuild();
-  try{var ac=await bigGet('ml_c_all');if(ac&&ac.x){GA=build(parseM3U(ac.x));GA.forEach(poolAdd)}}catch(e){}
+  try{var ac=await bigGet('ml_c_all');if(ac&&ac.x){GA=build(parseM3U(ac.x),false,false,true);GA.forEach(poolAdd)}}catch(e){}
   S.chans=[];S.map=new Map();
   await load();
 }
@@ -3734,7 +3822,7 @@ function srcRemove(k,btn){
   var ch=srcFind(k);if(!ch) return;
   var idx=SRCOPEN;
   dropFromApp(ch,'delete',{onUndo:function(){
-    if(SRCOPEN===idx&&Array.isArray(SRCCH[idx])){SRCCH[idx].push(ch);SRCCH[idx].sort(function(a,b){return a.n.localeCompare(b.n,'fa')});SRCSEL='';renderSettings()}
+    if(SRCOPEN===idx&&Array.isArray(SRCCH[idx])){SRCCH[idx].push(ch);SRCCH[idx].sort(function(a,b){return nameCmp(a.n,b.n)});SRCSEL='';renderSettings()}
   }});
   SRCCH[SRCOPEN]=SRCCH[SRCOPEN].filter(function(c){return c.k!==k});
   var row=btn.closest('.chrow');if(row) row.remove();
@@ -3767,6 +3855,7 @@ async function removeSources(items){
     }else allCut=false;
   }catch(e){allCut=false}
   items.forEach(function(x){bigSet('ml_srcch:'+x.u,{t:0,items:[]})});
+  keys.forEach(function(k){chdbDel(k)});
   var gone=function(c){return keys.has(c.k)};
   S.chans=S.chans.filter(function(c){return !gone(c)});
   S.map=new Map(S.chans.map(function(c){return [c.k,c]}));
@@ -4122,7 +4211,7 @@ async function startupUpdate(){
     var txt=await mainP;
     var extra=await extraP;
     if(extra) txt+=extra;
-    var arr=build(parseM3U(txt));
+    var arr=build(parseM3U(txt),false,false,true);
     if(!arr.length&&!(CFG.verify&&RAWN>0)) throw new Error('empty');
     await bigSet('ml_c_all',{t:Date.now(),x:txt});
     await trackNew(arr);
@@ -4133,6 +4222,7 @@ async function startupUpdate(){
   }catch(e){}
 }
 hideSplash();
+chdbLoad();
 /* شبکه‌های تأییدشده از نسخهٔ ذخیره‌شدهٔ دوم هم خوانده می‌شوند تا هیچ‌وقت دوباره آزمایش نشوند */
 if(CFG.verify) bigGet('ml_verx').then(function(o){
   var add=0;
